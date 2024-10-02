@@ -1,0 +1,80 @@
+
+stages:          # List of stages for jobs, and their order of execution
+  - build
+  - test
+  - package
+  - deploy
+
+
+build-job:       # This job runs in the build stage, which runs first.
+  stage: build
+  image:
+    name: maven:3.6.3-jdk-11
+  tags:
+    - docker-runner
+  script:
+    - git clone http://gitlab.ggs.lan/kossi/spring-actuator-test-docker.git
+    - cd spring-actuator-test-docker
+    - mvn clean install
+    - mvn clean package
+  allow_failure: true
+
+
+unit-test-job:   # This job runs in the test stage.
+  stage: test    # It only starts when the job in the build stage completes successfully.
+  image:
+    name: maven:3.6.3-jdk-11
+  tags:
+    - docker-runner
+  script:
+    - mvn test
+
+package_job:
+  stage: package
+  image:
+    name: docker:stable
+  tags:
+    - docker-runner
+  services:
+    - docker:stable-dind
+  before_script:
+    - echo $DOCKER_HOST
+    - docker login -u $CI_REGISTRY_USER -p $CI_JOB_TOKEN $CI_REGISTRY  
+  script:
+    - docker build -t gitlab.ggs.lan:5050/kossi/spring-actuator-test-docker:latest .
+    - docker push gitlab.ggs.lan:5050/kossi/spring-actuator-test-docker:latest
+
+
+deploy_staging_job:
+  stage: deploy
+  image: docker:stable
+  tags:
+    - docker-runner
+  services:
+    - docker:stable-dind
+  script: 
+    - docker login -u $CI_REGISTRY_USER -p $CI_JOB_TOKEN $CI_REGISTRY
+    - docker container rm -f spring-actuator-test-staging || true
+    - docker image pull gitlab.ggs.lan:5050/kossi/spring-actuator-test-docker:latest
+    - docker container run -d -p 30001:8093 --name spring-actuator-test-staging gitlab.ggs.lan:5050/kossi/spring-actuator-test-docker:latest
+  environment:
+    name: staging
+    url: http://192.168.56.10:30001
+
+deploy_prod_job:
+  stage: deploy
+  image: docker:stable
+  tags:
+    - docker-runner
+  services:
+    - docker:stable-dind
+  script: 
+    - docker login -u $CI_REGISTRY_USER -p $CI_JOB_TOKEN $CI_REGISTRY
+    - docker container rm -f spring-actuator-test-prod || true
+    - docker image pull gitlab.ggs.lan:5050/kossi/spring-actuator-test-docker:latest
+    - docker container run -d -p 8093:8093 --name spring-actuator-test-prod gitlab.ggs.lan:5050/kossi/spring-actuator-test-docker:latest
+    - docker rmi $(docker images -q --filter "dangling=true")
+  environment:
+    name: prod
+    url: http://192.168.56.10:8093
+  when: manual
